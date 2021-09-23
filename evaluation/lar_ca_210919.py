@@ -1,5 +1,5 @@
 """Notes
-ftc commit : 48a2f24
+ftc commit : 6ceee9e
 Algorithm: LQR + CA
 Object: success rate evaluation using parallel simulation
 """
