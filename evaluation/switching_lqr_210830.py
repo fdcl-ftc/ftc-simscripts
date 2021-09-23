@@ -39,7 +39,6 @@ class Env(fym.BaseEnv):
     def __init__(self, initial):
         super().__init__(**fym.parser.decode(cfg.env.kwargs))
         pos, vel, angle, omega = initial
-        pos[2] = pos[2] - 10
         quat = angle2quat(*angle.ravel()[::-1])
         self.plant = Multicopter(pos, vel, quat, omega)
         self.trim_forces = np.vstack([self.plant.m * self.plant.g, 0, 0, 0])
