@@ -1,5 +1,5 @@
 """Notes
-ftc commit : 48aef24
+ftc commit : 48a2f24
 Algorithm: LQR + CA
 Object: test for scenario 1
 """
