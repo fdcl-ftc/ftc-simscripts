@@ -4,11 +4,6 @@ Algorithm: LQR + CA
 Object: success rate evaluation using parallel simulation
 """
 import numpy as np
-import os
-from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor
-import time
-import tqdm
 
 import fym
 from fym.utils.rot import angle2quat
@@ -20,12 +15,13 @@ from ftc.faults.manager import LoEManager
 from ftc.evaluate.evaluate import calculate_recovery_rate
 from ftc.agents.CA import ConstrainedCA
 import ftc.agents.lqr as lqr
-from ftc.plotting import exp_plot
+
+from src.sim import sim_parallel, evaluate
 
 cfg = ftc.config.load()
-ftc.config.set({
-    "path.run": Path("data", "run"),
-})
+
+print("Change `cfg.episode.N`")
+cfg.episode.N = 1  # TODO: only for debugging
 
 
 class Env(fym.BaseEnv):
@@ -103,67 +99,15 @@ class Env(fym.BaseEnv):
                     rotors=rotors, rotors_cmd=rotors_cmd, W=W, ref=ref)
 
 
-def single_run(i, initial):
-    loggerpath = Path(cfg.path.run, f"env-{i:03d}.h5")
-    env = Env(initial)
-    env.logger = fym.Logger(loggerpath)
-    env.reset()
-
-    while True:
-        done = env.step()
-
-        if done:
-            env_info = {
-                "detection_time": env.detection_time,
-                "rotor_min": env.plant.rotor_min,
-                "rotor_max": env.plant.rotor_max,
-            }
-            env.logger.set_info(**env_info)
-            break
-
-    env.close()
-
-    data, info = fym.load(loggerpath, with_info=True)
-    time_index = data["t"] > cfg.env.kwargs.max_t - cfg.evaluation.cuttime
-    alt_error = cfg.ref.pos[2] - data["x"]["pos"][time_index, 2, 0]
-    fym.parser.update(info, dict(alt_error=np.mean(alt_error)))
-    fym.save(loggerpath, data, info=info)
-
-
-def main():
+if __name__ == "__main__":
     # Sampling initial conditions
+    # TODO: save and load the initial conditions to improve rng-stable simulation
     np.random.seed(0)
     pos = np.random.uniform(*cfg.episode.range.pos, size=(cfg.episode.N, 3, 1))
     vel = np.random.uniform(*cfg.episode.range.vel, size=(cfg.episode.N, 3, 1))
     angle = np.random.uniform(*cfg.episode.range.angle, size=(cfg.episode.N, 3, 1))
     omega = np.random.uniform(*cfg.episode.range.omega, size=(cfg.episode.N, 3, 1))
     initial_set = np.stack((pos, vel, angle, omega), axis=1)
-
-    # Initialize concurrent
-    cpu_workers = os.cpu_count()
-    max_workers = int(cfg.parallel.max_workers or cpu_workers)
-    assert max_workers <= os.cpu_count(), \
-        f"workers should be less than {cpu_workers}"
-    print(f"Sample with {max_workers} workers ...")
-
-    t0 = time.time()
-    with ProcessPoolExecutor(max_workers) as p:
-        list(tqdm.tqdm(
-            p.map(single_run, range(cfg.episode.N), initial_set),
-            total=cfg.episode.N
-        ))
-
-    print(f"Elapsed time is {time.time() - t0:5.2f} seconds."
-          f" > data saved in \"{cfg.path.run}\"")
-
-
-if __name__ == "__main__":
-    main()
-    alt_errors = []
-    for i in range(cfg.episode.N):
-        loggerpath = Path(cfg.path.run, f"env-{i:03d}.h5")
-        data, info = fym.load(loggerpath, with_info=True)
-        alt_errors = np.append(alt_errors, info["alt_error"])
-    recovery_rate = calculate_recovery_rate(alt_errors, threshold=0.5)
-    print(f"Recovery rate is {recovery_rate:.3f}.")
-    exp_plot(loggerpath)
+    # TODO: make Envs modularised
+    sim_parallel(initial_set, Env, cfg)
+    evaluate(cfg)
