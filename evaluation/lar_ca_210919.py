@@ -23,7 +23,7 @@ import ftc.agents.lqr as lqr
 from ftc.plotting import exp_plot
 
 cfg = ftc.config_forward.load()
-ftc.config.set({
+ftc.config_forward.set({
     "path.run": Path("data", "run"),
 })
 
