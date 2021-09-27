@@ -27,6 +27,7 @@ cfg = ftc.config.load()
 ftc.config.set({
     "path.run": Path("data", "run"),
 })
+cfg.episode.N = 1  # TODO
 
 logger.remove()
 logger.add(sys.stderr, filter={
@@ -96,7 +97,14 @@ class Env(fym.BaseEnv):
                     rotors=rotors, rotors_cmd=rotors_cmd, W=W, ref=ref)
 
 
-def single_run(i, initial):
+# def sim_func(Env):
+#     def sim(i, initial):
+#         env = Env(initial)
+#         return single_run(i, env)
+#     return sim
+
+def single_run(i, initial, Env):
+# def single_run(i, env):
     loggerpath = Path(cfg.path.run, f"env-{i:03d}.h5")
     env = Env(initial)
     env.logger = fym.Logger(loggerpath)
@@ -140,14 +148,17 @@ def main():
     logger.info(f"Sample with {max_workers} workers ...")
 
     t0 = time.time()
+    # _sim = sim_func(Env)
     with ProcessPoolExecutor(max_workers) as p:
         list(tqdm.tqdm(
-            p.map(single_run, range(cfg.episode.N), initial_set),
+            # p.map(single_run, range(cfg.episode.N), initial_set),
+            # p.map(_sim, range(cfg.episode.N), initial_set),
+            p.map((lambda i, initial: single_run(i, initial, Env)), range(cfg.episode.N), initial_set),
             total=cfg.episode.N
         ))
 
-    logger.info(f"Elapsed time is {time.time() - t0:5.2f} seconds."
-                f" > data saved in \"{cfg.path.run}\"")
+    # logger.info(f"Elapsed time is {time.time() - t0:5.2f} seconds."
+    #             f" > data saved in \"{cfg.path.run}\"")
 
 
 if __name__ == "__main__":
