@@ -1,0 +1,114 @@
+"""Notes
+ftc commit : 3feda03
+Algorithm: Adaptive SMC + CA
+Object: success rate evaluation using parallel simulation
+"""
+import numpy as np
+
+import fym
+from fym.utils.rot import angle2quat
+
+import ftc.config
+from ftc.models.multicopter import Multicopter
+from ftc.faults.actuator import LoE
+from ftc.faults.manager import LoEManager
+from ftc.evaluate.evaluate import calculate_recovery_rate
+from ftc.agents.CA import CA
+import ftc.agents.AdaptiveSMC as asmc
+
+from src.sim import sim_parallel, evaluate
+
+cfg = ftc.config.load()
+
+print("Change `cfg.episode.N`")
+cfg.episode.N = 1  # TODO: only for debugging
+
+
+class Env(fym.BaseEnv):
+    def __init__(self, initial):
+        super().__init__(**fym.parser.decode(cfg.env.kwargs))
+        pos, vel, angle, omega = initial
+        quat = angle2quat(*angle.ravel()[::-1])
+        self.plant = Multicopter(pos, vel, quat, omega)
+        n = self.plant.mixer.B.shape[1]
+
+        # Define faults
+        self.sensor_faults = []
+        self.fault_manager = LoEManager([
+            LoE(time=3, index=0, level=0.),  # scenario a
+            # LoE(time=6, index=2, level=0.),  # scenario b
+        ], no_act=n)
+
+        # Define FDI
+        self.fdi = self.fault_manager.fdi
+
+        # Define agents
+        self.CA = CA(self.plant.mixer.B)
+        self.controller = asmc.AdaptiveSMController(self.plant.J,
+                                                    self.plant.m,
+                                                    self.plant.g,
+                                                    self.plant.d,
+                                                    initial,
+                                                    self.get_ref())
+
+        self.detection_time = self.fault_manager.fault_times + self.fdi.delay
+
+    def step(self):
+        *_, done = self.update()
+        return done
+
+    def control_allocation(self, t, forces, What):
+        fault_index = self.fdi.get_index(t)
+
+        if len(fault_index) == 0:
+            rotors = np.linalg.pinv(self.plant.mixer.B).dot(forces)
+        else:
+            rotors = np.linalg.pinv(self.plant.mixer.B.dot(What)).dot(forces)
+        return rotors
+
+    def get_ref(self, t):
+        pos_des = cfg.ref.pos
+        vel_des = np.vstack([0, 0, 0])
+        quat_des = np.vstack([1, 0, 0, 0])
+        omega_des = np.vstack([0, 0, 0])
+        ref = np.vstack([pos_des, vel_des, quat_des, omega_des])
+
+        return ref
+
+    def set_dot(self, t):
+        mult_states = self.plant.state
+        W = self.fdi.get_true(t)
+        What = self.fdi.get(t)
+        ref = self.get_ref(t)
+        _, gamma = self.controller.observe_list()
+
+        # Controller
+        forces, sliding = self.controller.get_FM(mult_states, ref)
+
+        rotors_cmd = self.control_allocation(t, forces, What)
+
+        # actuator saturation
+        rotors = np.clip(rotors_cmd, 0, self.plant.rotor_max)
+
+        # Set actuator faults
+        rotors = self.fault_manager.get_faulty_input(t, rotors)
+
+        self.plant.set_dot(t, rotors)
+        self.controller.set_dot(mult_states, ref, sliding)
+
+        return dict(t=t, x=self.plant.observe_dict(), What=What,
+                    rotors=rotors, rotors_cmd=rotors_cmd, W=W, ref=ref)
+
+
+if __name__ == "__main__":
+    # Sampling initial conditions
+    # TODO: save and load the initial conditions to improve rng-stable simulation
+    np.random.seed(0)
+    pos = np.random.uniform(*cfg.episode.range.pos, size=(cfg.episode.N, 3, 1))
+    vel = np.random.uniform(*cfg.episode.range.vel, size=(cfg.episode.N, 3, 1))
+    angle = np.random.uniform(*cfg.episode.range.angle, size=(cfg.episode.N, 3, 1))
+    omega = np.random.uniform(*cfg.episode.range.omega, size=(cfg.episode.N, 3, 1))
+    initial_set = np.stack((pos, vel, angle, omega), axis=1)
+    # TODO: make Envs modularised
+    sim_parallel(initial_set, Env, cfg)
+    evaluate(cfg)
