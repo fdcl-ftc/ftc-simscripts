@@ -4,6 +4,11 @@ Algorithm: Adaptive SMC + CA
 Object: success rate evaluation using parallel simulation
 """
 import numpy as np
+import os
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor
+import time
+import tqdm
 
 import fym
 from fym.utils.rot import angle2quat
@@ -15,13 +20,12 @@ from ftc.faults.manager import LoEManager
 from ftc.evaluate.evaluate import calculate_recovery_rate
 from ftc.agents.CA import CA
 import ftc.agents.AdaptiveSMC as asmc
-
-from src.sim import sim_parallel, evaluate
+from ftc.plotting import exp_plot
 
 cfg = ftc.config.load()
-
-print("Change `cfg.episode.N`")
-cfg.episode.N = 1  # TODO: only for debugging
+ftc.config.set({
+    "path.run": Path("data", "run"),
+})
 
 
 class Env(fym.BaseEnv):
@@ -44,12 +48,14 @@ class Env(fym.BaseEnv):
 
         # Define agents
         self.CA = CA(self.plant.mixer.B)
+        ic = np.vstack((pos, vel, quat, omega))
+        ref = np.vstack((0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0))
         self.controller = asmc.AdaptiveSMController(self.plant.J,
                                                     self.plant.m,
                                                     self.plant.g,
                                                     self.plant.d,
-                                                    initial,
-                                                    self.get_ref())
+                                                    ic,
+                                                    ref)
 
         self.detection_time = self.fault_manager.fault_times + self.fdi.delay
 
@@ -80,10 +86,10 @@ class Env(fym.BaseEnv):
         W = self.fdi.get_true(t)
         What = self.fdi.get(t)
         ref = self.get_ref(t)
-        _, gamma = self.controller.observe_list()
+        p, gamma = self.controller.observe_list()
 
         # Controller
-        forces, sliding = self.controller.get_FM(mult_states, ref)
+        forces, sliding = self.controller.get_FM(mult_states, ref, p, gamma)
 
         rotors_cmd = self.control_allocation(t, forces, What)
 
@@ -100,15 +106,67 @@ class Env(fym.BaseEnv):
                     rotors=rotors, rotors_cmd=rotors_cmd, W=W, ref=ref)
 
 
-if __name__ == "__main__":
+def single_run(i, initial):
+    loggerpath = Path(cfg.path.run, f"env-{i:03d}.h5")
+    env = Env(initial)
+    env.logger = fym.Logger(loggerpath)
+    env.reset()
+
+    while True:
+        done = env.step()
+
+        if done:
+            env_info = {
+                "detection_time": env.detection_time,
+                "rotor_min": env.plant.rotor_min,
+                "rotor_max": env.plant.rotor_max,
+            }
+            env.logger.set_info(**env_info)
+            break
+
+    env.close()
+
+    data, info = fym.load(loggerpath, with_info=True)
+    time_index = data["t"] > cfg.env.kwargs.max_t - cfg.evaluation.cuttime
+    alt_error = cfg.ref.pos[2] - data["x"]["pos"][time_index, 2, 0]
+    fym.parser.update(info, dict(alt_error=np.mean(alt_error)))
+    fym.save(loggerpath, data, info=info)
+
+
+def main():
     # Sampling initial conditions
-    # TODO: save and load the initial conditions to improve rng-stable simulation
     np.random.seed(0)
     pos = np.random.uniform(*cfg.episode.range.pos, size=(cfg.episode.N, 3, 1))
     vel = np.random.uniform(*cfg.episode.range.vel, size=(cfg.episode.N, 3, 1))
     angle = np.random.uniform(*cfg.episode.range.angle, size=(cfg.episode.N, 3, 1))
     omega = np.random.uniform(*cfg.episode.range.omega, size=(cfg.episode.N, 3, 1))
     initial_set = np.stack((pos, vel, angle, omega), axis=1)
-    # TODO: make Envs modularised
-    sim_parallel(initial_set, Env, cfg)
-    evaluate(cfg)
+
+    # Initialize concurrent
+    cpu_workers = os.cpu_count()
+    max_workers = int(cfg.parallel.max_workers or cpu_workers)
+    assert max_workers <= os.cpu_count(), \
+        f"workers should be less than {cpu_workers}"
+    print(f"Sample with {max_workers} workers ...")
+
+    t0 = time.time()
+    with ProcessPoolExecutor(max_workers) as p:
+        list(tqdm.tqdm(
+            p.map(single_run, range(cfg.episode.N), initial_set),
+            total=cfg.episode.N
+        ))
+
+    print(f"Elapsed time is {time.time() - t0:5.2f} seconds."
+          f" > data saved in \"{cfg.path.run}\"")
+
+
+if __name__ == "__main__":
+    main()
+    alt_errors = []
+    for i in range(cfg.episode.N):
+        loggerpath = Path(cfg.path.run, f"env-{i:03d}.h5")
+        data, info = fym.load(loggerpath, with_info=True)
+        alt_errors = np.append(alt_errors, info["alt_error"])
+    recovery_rate = calculate_recovery_rate(alt_errors, threshold=0.5)
+    print(f"Recovery rate is {recovery_rate:.3f}.")
+    exp_plot(loggerpath)
