@@ -12,7 +12,7 @@ import ftc.config
 from ftc.models.multicopter import Multicopter
 from ftc.faults.actuator import LoE
 from ftc.faults.manager import LoEManager
-from ftc.agents.switching import LQRLibrary
+from ftc.agents.switching_lqr import LQRLibrary
 
 from src.sim import sim_parallel, evaluate
 
