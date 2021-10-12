@@ -13,7 +13,7 @@ import ftc.config
 from ftc.models.multicopter import Multicopter
 from ftc.faults.actuator import LoE
 from ftc.faults.manager import LoEManager
-from ftc.agents.hinf import Hinf
+from ftc.agents.hinf import SwitchingHinf
 from ftc.plotting import exp_plot
 
 ftc.config.set({
@@ -33,7 +33,7 @@ class ActuatorDynamcs(BaseSystem):
 
 class Env(BaseEnv):
     def __init__(self):
-        super().__init__(dt=50, max_t=50, solver="odeint", ode_step_len=1000)
+        super().__init__(dt=20, max_t=20, solver="odeint", ode_step_len=1000)
         init = cfg.models.multicopter.init
         self.plant = Multicopter(init.pos, init.vel, init.quat, init.omega)
         self.trim_forces = np.vstack([self.plant.m * self.plant.g, 0, 0, 0])
@@ -44,15 +44,15 @@ class Env(BaseEnv):
 
         # Define faults
         self.fault_manager = LoEManager([
-            # LoE(time=3, index=0, level=0.8),  # scenario a
-            # LoE(time=10, index=2, level=0.8),  # scenario b
+            LoE(time=3, index=0, level=0.0),  # scenario a
+            LoE(time=6, index=2, level=0.0),  # scenario b
         ], no_act=n)
 
         # Define FDI
         self.fdi = self.fault_manager.fdi
 
         # Define agents
-        self.controller = Hinf(self.plant, hinf_options=dict(use_preset=False))
+        self.controller = SwitchingHinf(self.plant, config=dict(use_preset=False))
 
         self.detection_time = self.fault_manager.fault_times + self.fdi.delay
 
